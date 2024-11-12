@@ -1,4 +1,358 @@
-	  fg="red").grid(row=0, column=3, padx=10)
+from tkinter import *
+from tkinter import simpledialog
+from math import atan2, degrees
+import random
+from abc import ABC, abstractmethod
+
+class Player(ABC):
+	def __init__(self, color):
+		self.color = color  # "Blue" or "Red"
+		self.current_letter = "S"  # Default letter choice
+
+	@abstractmethod
+	def make_move(self, game_logic):
+		"""
+		Make a move on the game board
+		Returns: (row, col, letter) or None if no move is possible
+		"""
+		pass
+
+	def set_letter(self, letter):
+		"""Set the current letter choice (S or O)"""
+		self.current_letter = letter
+
+	@property
+	def player_type(self):
+		return self.__class__.__name__
+
+class HumanPlayer(Player):
+	def __init__(self, color):
+		super().__init__(color)
+
+	def make_move(self, game_logic):
+		# Human moves are handled by GUI clicks
+		# This method won't be called directly
+		return None
+
+class ComputerPlayer(Player):
+	def __init__(self, color):
+		super().__init__(color)
+
+	def make_move(self, game_logic):
+		"""Implement computer player strategy"""
+		valid_moves = game_logic.get_valid_moves()
+		if not valid_moves:
+			return None
+
+		# Strategy 1: Complete an SOS if possible
+		for row, col in valid_moves:
+			for letter in ['S', 'O']:
+				if game_logic.check_potential_sos(row, col, letter):
+					return row, col, letter
+
+		# Strategy 2: Block opponent's potential SOS
+		for row, col in valid_moves:
+			for letter in ['S', 'O']:
+				if game_logic.check_potential_sos(row, col, letter):
+					return row, col, letter
+
+		# Strategy 3: Try to set up future SOS opportunities
+		corner_moves = [(r, c) for r, c in valid_moves 
+					   if r in [0, game_logic.board_size-1] and 
+					   c in [0, game_logic.board_size-1]]
+		if corner_moves:
+			move = random.choice(corner_moves)
+			return move[0], move[1], 'S'  # Prefer 'S' in corners
+
+		# Strategy 4: Random move with weighted letter choice
+		move = random.choice(valid_moves)
+		letter = random.choice(['S', 'S', 'O'])  # Prefer 'S' slightly
+		return move[0], move[1], letter
+
+class SOSGameLogic:
+	def __init__(self, board_size):
+		self.board_size = board_size
+		self.sos_lines = []
+		self.blue_player = HumanPlayer("Blue")  # Default to human players
+		self.red_player = HumanPlayer("Red")
+		self.reset_game()
+		self.game_mode = "Simple"
+
+	def reset_game(self):
+		self.board = [['' for _ in range(self.board_size)] for _ in range(self.board_size)]
+		self.current_player = self.blue_player  # Now stores Player object
+		self.game_over = False
+		self.blue_score = 0
+		self.red_score = 0
+		self.last_sos_count = 0
+		self.sos_lines.clear()
+
+	def switch_player(self):
+		self.current_player = self.red_player if self.current_player == self.blue_player else self.blue_player
+
+	def place_letter(self, row, col, letter):
+		if self.game_over or self.board[row][col] != '':
+			return False, []
+
+		self.board[row][col] = letter
+		new_sos_lines = self.check_all_sos_at_position(row, col)
+		sos_formed = len(new_sos_lines) > 0
+		self.last_sos_count = len(new_sos_lines)
+
+		if sos_formed:
+			self.sos_lines.extend([(start, end, self.current_player.color) 
+								 for start, end in new_sos_lines])
+			if self.current_player.color == "Blue":
+				self.blue_score += self.last_sos_count
+			else:
+				self.red_score += self.last_sos_count
+
+			if self.game_mode == "Simple" or self.is_board_full():
+				self.game_over = True
+		else:
+			if self.is_board_full():
+				self.game_over = True
+			else:
+				self.switch_player()
+
+		return True, new_sos_lines
+
+	def check_all_sos_at_position(self, row, col):
+		directions = [
+			(-1, -1), (-1, 0), (-1, 1),
+			(0, -1),           (0, 1),
+			(1, -1),  (1, 0),  (1, 1)
+		]
+
+		sos_lines = []
+		current_letter = self.board[row][col]
+
+		if current_letter == 'S':
+			for dr, dc in directions:
+				if (0 <= row + 2*dr < self.board_size and 
+					0 <= col + 2*dc < self.board_size):
+					if (self.board[row + dr][col + dc] == 'O' and 
+						self.board[row + 2*dr][col + 2*dc] == 'S'):
+						sos_lines.append(((row, col), (row + 2*dr, col + 2*dc)))
+
+		elif current_letter == 'O':
+			for dr, dc in directions:
+				if (0 <= row - dr < self.board_size and 
+					0 <= row + dr < self.board_size and
+					0 <= col - dc < self.board_size and 
+					0 <= col + dc < self.board_size):
+					if (self.board[row - dr][col - dc] == 'S' and 
+						self.board[row + dr][col + dc] == 'S'):
+						sos_lines.append(((row - dr, col - dc), (row + dr, col + dc)))
+
+		return sos_lines
+
+	def is_board_full(self):
+		return all(cell != '' for row in self.board for cell in row)
+
+	def get_current_player_type(self):
+		return self.current_player.player_type  # Now uses Player object's property
+
+	def get_valid_moves(self):
+		"""Returns list of valid moves as (row, col) tuples"""
+		moves = []
+		for row in range(self.board_size):
+			for col in range(self.board_size):
+				if self.board[row][col] == '':
+					moves.append((row, col))
+		return moves
+
+	def check_potential_sos(self, row, col, letter):
+		"""Check if placing letter at position would form an SOS"""
+		# Temporarily place the letter
+		original = self.board[row][col]
+		self.board[row][col] = letter
+		sos_lines = self.check_all_sos_at_position(row, col)
+		# Restore the board
+		self.board[row][col] = original
+		return len(sos_lines) > 0
+
+
+
+class SOSGUI:
+	def __init__(self, master):
+		self.master = master
+		self.master.title("SOS Game")
+		self.game_mode = StringVar(value="Simple")
+		self.player_colors = {"Blue": "blue", "Red": "red"}
+		self.cell_size = 50
+		self.show_setup_dialog()
+		self.master.minsize(600, 800)
+
+	def show_setup_dialog(self):
+		dialog = Toplevel(self.master)
+		dialog.title("Game Setup")
+		dialog.transient(self.master)
+		dialog.grab_set()
+		dialog.resizable(False, False)  # Prevent resizing
+		pass
+
+		# Main frame with padding
+		main_frame = Frame(dialog, padx=20, pady=20)
+		main_frame.pack(expand=True, fill=BOTH)
+
+		# Title at the top
+		Label(main_frame, text="SOS Game Setup", 
+			  font=("Helvetica", 16, "bold")).pack(pady=(0, 20))
+
+		# Board Size Section
+		size_frame = LabelFrame(main_frame, text="Board Size", 
+							   font=("Helvetica", 12, "bold"), pady=10, padx=10)
+		size_frame.pack(fill=X, pady=10)
+
+		Label(size_frame, text="Select size (3-10):", 
+			  font=("Helvetica", 11)).pack()
+		size_var = IntVar(value=8)
+		Scale(size_frame, from_=3, to=10, orient=HORIZONTAL, 
+			  variable=size_var, length=200).pack(pady=5)
+
+		# Game Mode Section
+		mode_frame = LabelFrame(main_frame, text="Game Mode", 
+							   font=("Helvetica", 12, "bold"), pady=10, padx=10)
+		mode_frame.pack(fill=X, pady=10)
+
+		mode_var = StringVar(value="Simple")
+		Radiobutton(mode_frame, text="Simple Game", variable=mode_var, 
+					value="Simple", font=("Helvetica", 11)).pack(pady=5)
+		Radiobutton(mode_frame, text="General Game", variable=mode_var, 
+					value="General", font=("Helvetica", 11)).pack(pady=5)
+
+		# Player Selection Section
+		players_frame = LabelFrame(main_frame, text="Player Selection", 
+								 font=("Helvetica", 12, "bold"), pady=10, padx=10)
+		players_frame.pack(fill=X, pady=10)
+
+		# Blue Player
+		Label(players_frame, text="Blue Player:", 
+			  font=("Helvetica", 11, "bold"), fg="blue").pack(pady=5)
+		blue_player_var = StringVar(value="Human")
+		Radiobutton(players_frame, text="Human Player", variable=blue_player_var, 
+					value="Human", font=("Helvetica", 11)).pack()
+		Radiobutton(players_frame, text="Computer Player", variable=blue_player_var, 
+					value="Computer", font=("Helvetica", 11)).pack()
+
+		# Separator
+		Frame(players_frame, height=2, bd=1, relief=SUNKEN).pack(fill=X, pady=10)
+
+		# Red Player
+		Label(players_frame, text="Red Player:", 
+			  font=("Helvetica", 11, "bold"), fg="red").pack(pady=5)
+		red_player_var = StringVar(value="Human")
+		Radiobutton(players_frame, text="Human Player", variable=red_player_var, 
+					value="Human", font=("Helvetica", 11)).pack()
+		Radiobutton(players_frame, text="Computer Player", variable=red_player_var, 
+					value="Computer", font=("Helvetica", 11)).pack()
+
+		# Start Game Button
+		def start_game():
+			self.board_size = size_var.get()
+			self.game_mode.set(mode_var.get())
+			self.blue_player_type = blue_player_var.get()
+			self.red_player_type = red_player_var.get()
+			dialog.destroy()
+			self.initialize_game()
+
+		Button(main_frame, text="Start Game", command=start_game, 
+			   font=("Helvetica", 12, "bold"), bg="#4CAF50", fg="white",
+			   padx=20, pady=10).pack(pady=20)
+
+		# Set dialog size and position
+		dialog_width = 400
+		dialog_height = 700  # Increased height to fit all elements comfortably
+		screen_width = dialog.winfo_screenwidth()
+		screen_height = dialog.winfo_screenheight()
+		x = (screen_width - dialog_width) // 2
+		y = (screen_height - dialog_height) // 2
+		dialog.geometry(f'{dialog_width}x{dialog_height}+{x}+{y}')
+
+		# Wait for the dialog
+		self.master.wait_window(dialog)
+
+	def initialize_game(self):
+		self.game_logic = SOSGameLogic(self.board_size)
+		self.game_logic.game_mode = self.game_mode.get()
+
+		# Initialize players based on selection
+		self.game_logic.blue_player = (HumanPlayer("Blue") if self.blue_player_type == "Human" 
+									 else ComputerPlayer("Blue"))
+		self.game_logic.red_player = (HumanPlayer("Red") if self.red_player_type == "Human" 
+									else ComputerPlayer("Red"))
+
+		# Reset game to ensure proper initialization
+		self.game_logic.reset_game()
+
+		# ... [rest of window setup remains the same] ...
+
+		self.create_board()
+		self.create_info_panel()
+
+		# Update UI before making computer move
+		self.update_ui()
+
+		# Schedule computer move if it's first
+		if isinstance(self.game_logic.current_player, ComputerPlayer):
+			self.master.after(1000, self.make_computer_move)
+
+	def create_board(self):
+		canvas_size = self.cell_size * self.board_size
+		self.canvas = Canvas(self.master, width=canvas_size, height=canvas_size, bg='white')
+		self.canvas.grid(row=1, column=0, columnspan=self.board_size, padx=10, pady=10)
+
+		# Draw grid
+		for i in range(self.board_size + 1):
+			self.canvas.create_line(i * self.cell_size, 0, i * self.cell_size, canvas_size)
+			self.canvas.create_line(0, i * self.cell_size, canvas_size, i * self.cell_size)
+
+		# Create cells
+		self.cells = {}
+		for row in range(self.board_size):
+			for col in range(self.board_size):
+				x, y = col * self.cell_size, row * self.cell_size
+				cell_id = self.canvas.create_rectangle(x, y, x + self.cell_size, 
+													 y + self.cell_size, fill='white')
+				text_id = self.canvas.create_text(x + self.cell_size//2, 
+												y + self.cell_size//2, 
+												text='', font=('Helvetica', 20))
+				self.cells[(row, col)] = (cell_id, text_id)
+
+		self.canvas.bind('<Button-1>', self.on_canvas_click)
+
+	def create_info_panel(self):
+		info_frame = Frame(self.master)
+		info_frame.grid(row=2, column=0, columnspan=self.board_size, pady=10)
+
+		# Player controls
+		self.create_player_controls(info_frame)
+
+		# Game information
+		self.create_game_info(info_frame)
+
+		# Control buttons - Moving these to be more visible
+		control_frame = Frame(self.master)  # Create a separate frame for controls
+		control_frame.grid(row=3, column=0, columnspan=self.board_size, pady=10)
+
+		Button(control_frame, 
+			   text="New Game", 
+			   command=self.reset_game,
+			   font=("Helvetica", 12),
+			   width=15).pack(side=LEFT, padx=10)
+
+		Button(control_frame, 
+			   text="Change Mode", 
+			   command=self.change_game_mode,
+			   font=("Helvetica", 12),
+			   width=15).pack(side=LEFT, padx=10)
+
+	def create_player_controls(self, parent):
+		Label(parent, text="Blue Player", font=("Helvetica", 12), 
+			  fg="blue").grid(row=0, column=0, padx=10)
+		Label(parent, text="Red Player", font=("Helvetica", 12), 
+			  fg="red").grid(row=0, column=3, padx=10)
 
 		self.blue_choice = StringVar(value="S")
 		self.red_choice = StringVar(value="S")
